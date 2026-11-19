@@ -9,14 +9,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import * as pathMod from "node:path";
 import { resolve, join } from "node:path";
 import { createRequire } from "node:module";
 const req = createRequire(join(process.cwd(), "noop.js"));
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const MAX_OUT = Number(process.env.CODE_MODE_MAX_OUTPUT ?? 20000);
 const CONFIG = process.env.CODE_MODE_CONFIG ?? join(homedir(), ".config/code-mode/servers.json");
 
@@ -98,7 +98,47 @@ const mcpApi: any = {
   async call(server: string, tool: string, args: Record<string, unknown> = {}) {
     return unwrap(await (await client(server)).callTool({ name: tool, arguments: args }));
   },
+  // Compact TS-like signatures, cached on disk so no connection is needed to read them.
+  async docs(server: string, filter?: string, opts: { refresh?: boolean } = {}) {
+    const file = join(CACHE_DIR, `${server}.json`);
+    let tools: CachedTool[] | undefined;
+    if (!opts.refresh && existsSync(file)) tools = JSON.parse(readFileSync(file, "utf8"));
+    if (!tools) {
+      const res = await (await client(server)).listTools();
+      tools = res.tools.map((t) => ({ name: t.name, description: t.description ?? "", inputSchema: t.inputSchema }));
+      mkdirSync(CACHE_DIR, { recursive: true });
+      writeFileSync(file, JSON.stringify(tools));
+    }
+    const f = filter?.toLowerCase();
+    return tools
+      .filter((t) => !f || t.name.toLowerCase().includes(f) || t.description.toLowerCase().includes(f))
+      .map((t) => `${t.name}(${sig(t.inputSchema)}) // ${firstLine(t.description)}`)
+      .join("\n");
+  },
 };
+
+type CachedTool = { name: string; description: string; inputSchema: any };
+const CACHE_DIR = join(homedir(), ".cache/code-mode");
+const firstLine = (s: string) => s.split(/\n|(?<=\.)\s/)[0].slice(0, 100);
+
+function tsType(s: any): string {
+  if (!s) return "any";
+  if (s.enum) return s.enum.slice(0, 6).map((v: unknown) => JSON.stringify(v)).join("|") + (s.enum.length > 6 ? "|…" : "");
+  if (s.anyOf || s.oneOf) return (s.anyOf ?? s.oneOf).map(tsType).filter((t: string) => t !== "null").join("|");
+  const t = Array.isArray(s.type) ? s.type.filter((x: string) => x !== "null")[0] : s.type;
+  if (t === "array") return `${tsType(s.items)}[]`;
+  if (t === "integer") return "number";
+  if (t === "object") return s.properties ? `{${sig(s)}}` : "object";
+  return t ?? "any";
+}
+
+function sig(schema: any): string {
+  const props = schema?.properties ?? {};
+  const req = new Set<string>(schema?.required ?? []);
+  return Object.entries(props)
+    .map(([k, v]) => `${k}${req.has(k) ? "" : "?"}: ${tsType(v)}`)
+    .join(", ");
+}
 const mcp = new Proxy(mcpApi, {
   get(target, server: string) {
     if (server in target) return target[server];
@@ -178,11 +218,32 @@ function fmt(v: unknown): string {
   try { return JSON.stringify(v) ?? String(v); } catch { return String(v); }
 }
 
+// ---------- helpers ----------
+// Each ~/.config/code-mode/lib/*.js: `export default (ctx) => ({ fnName: async (...) => ... })`
+// and optionally `export const docs = { fnName: "fnName(args) -> result // what it does" }`.
+const LIB_DIR = process.env.CODE_MODE_LIB ?? join(homedir(), ".config/code-mode/lib");
+const helpers: Record<string, unknown> = {};
+const helperDocs: string[] = [];
+if (existsSync(LIB_DIR)) {
+  for (const f of readdirSync(LIB_DIR).filter((f) => /\.(m?js|ts)$/.test(f)).sort()) {
+    try {
+      const mod = await import(join(LIB_DIR, f));
+      const made = typeof mod.default === "function" ? await mod.default({ fs, sh, grep, mcp, path: pathMod }) : mod.default;
+      for (const [k, v] of Object.entries(made ?? {})) {
+        helpers[k] = v;
+        helperDocs.push(mod.docs?.[k] ?? `${k}(...)`);
+      }
+    } catch (e) {
+      console.error(`code-mode: helper ${f} failed: ${e}`);
+    }
+  }
+}
+
 async function run(code: string, timeoutMs: number) {
   const logs: string[] = [];
   const log = (...a: unknown[]) => logs.push(a.map(fmt).join(" "));
   const sandboxConsole = { log, info: log, warn: log, error: log, debug: log };
-  const api = { fs, sh, grep, mcp, console: sandboxConsole, cwd: cwd(), path: pathMod, require: req, sleep: (ms: number) => Bun.sleep(ms) };
+  const api = { ...helpers, fs, sh, grep, mcp, console: sandboxConsole, cwd: cwd(), path: pathMod, require: req, sleep: (ms: number) => Bun.sleep(ms) };
   const fn = new AsyncFunction(...Object.keys(api), code);
   const t0 = performance.now();
   let result: unknown, error: string | undefined;
@@ -217,10 +278,13 @@ Globals (cwd = ${cwd()}). Every fs/grep/sh/mcp function is async: always \`await
   fs.exists(path) -> bool ; fs.glob(pattern, {cwd?, limit?}) -> string[]
   grep(regex, {path?, glob?, ignoreCase?, filesOnly?, limit?}) -> [{file,line,text}] | string[]   // ripgrep
   sh(cmd, {cwd?, timeout?, check?}) -> {code, stdout, stderr}   // bash -c
-  mcp.servers() -> string[] ; mcp.tools(server, filter?) -> [{name, description, input}]
-  mcp.call(server, tool, args) or mcp.<server>.<tool>(args) -> parsed result
+  mcp.docs(server, filter?) -> string   // cached one-line signatures: name(arg: type, opt?: type) // what it does
+  mcp.<server>.<tool>(args) or mcp.call(server, tool, args) -> parsed result ; mcp.tools(server, filter?) -> full schemas
   console.log(...) (shown as logs), sleep(ms), path (node:path), require, process.
-MCP servers: ${MCP_LIST}. If you don't know a server's tool names or input schema yet, call mcp.tools(server, filter) in the same script, then use them.`;
+MCP servers: ${MCP_LIST}. Unsure of a tool's name or args? Call mcp.docs(server, "keyword") first (cheap, cached), not mcp.tools.${helperDocs.length ? `
+
+Helpers (globals; prefer them over raw MCP calls when they fit):
+${helperDocs.map((d) => "  " + d).join("\n")}` : ""}`;
 
 const INSTRUCTIONS = `code-mode: prefer the run_script tool over sequences of Read/Grep/Glob/Bash/MCP calls. Any task needing 2+ lookups, loops, filtering, joining or counting goes in ONE run_script call that returns only the final answer. MCP servers reachable from it: ${MCP_LIST} (use them there even if a direct tool for the same service exists).`;
 
