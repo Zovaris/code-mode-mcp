@@ -16,7 +16,7 @@ import { resolve, join } from "node:path";
 import { createRequire } from "node:module";
 const req = createRequire(join(process.cwd(), "noop.js"));
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const MAX_OUT = Number(process.env.CODE_MODE_MAX_OUTPUT ?? 20000);
 
 // ---------- layers: global (~/.config/code-mode) then project (.code-mode/ up from cwd) ----------
@@ -347,6 +347,11 @@ function buildApi(log: (...a: unknown[]) => void) {
   const api: Record<string, unknown> = {
     ...helpers, fs, sh, grep, mcp, config, console: sandboxConsole, cwd: cwd(), path: pathMod, require: req,
     sleep: (ms: number) => Bun.sleep(ms),
+    help: (kw = "") => {
+      const k = kw.toLowerCase();
+      return [...helperDocs, ...[...loadScripts().values()].map((s) => `scripts.run("${s.name}", ${scriptSig(s).replace(/^[^(]+/, "")}`)]
+        .filter((d) => d.toLowerCase().includes(k)).join("\n");
+    },
   };
   const scriptsApi = {
     list: () => [...loadScripts().values()].map(scriptSig),
@@ -389,32 +394,19 @@ async function run(code: string, timeoutMs: number, args: Record<string, unknown
 const servers = Object.keys(serverCfgs);
 const MCP_LIST = servers.length ? servers.join(", ") : "(none configured)";
 const startupScripts = [...loadScripts().values()].map(scriptSig);
-const DESCRIPTION = `DEFAULT tool for any task that needs 2+ tool calls. Runs JavaScript (async function body; use \`return\`) that reads files, greps, runs shell and calls MCP servers (${MCP_LIST}) in ONE call. Only the returned value enters your context, so return just the answer (counts, filtered rows, short excerpts), never raw dumps.
+// Kept short on purpose: it is paid in every session. Full signatures live behind help() and mcp.docs().
+const shortDoc = (d: string) => {
+  const [sig, what] = d.split(" // ");
+  return `${sig.split("(")[0]}${what ? ` (${what.split(/[;:(]/)[0].trim()})` : ""}`;
+};
+const DESCRIPTION = `Runs JS (async function body, \`return\` the result) in ONE call; only the returned value enters your context. DEFAULT for anything needing 2+ steps: several files/searches, loops, filter/group/count, combining git, files and MCP. Direct tools only for one read, one edit shown as a diff, or one standalone call. Return only the answer, never raw dumps.
+API (all async): fs.read(p,{offset,limit}) fs.write fs.edit(p,old,new) fs.glob(pat) fs.exists; grep(re,{path,glob,filesOnly}) -> [{file,line,text}]; sh(cmd,{cwd,timeout}) -> {code,stdout,stderr}; mcp.<server>.<tool>(args); mcp.docs(server,"kw") -> tool signatures; scripts.run(name,args); help("kw") -> helper/script signatures; config; args; console.log; path; require.
+MCP servers: ${MCP_LIST}.${helperDocs.length ? `
+Helpers: ${helperDocs.map(shortDoc).join("; ")}.` : ""}${startupScripts.length ? `
+Saved scripts (run_script({script,args})): ${startupScripts.map(shortDoc).join("; ")}.` : ""}
+Repeated action or user asks to save one -> save_script; keep specifics in args/config.`;
 
-Use it instead of chaining Read/Grep/Glob/Bash or MCP tools when you would: read or search several files; loop over files, issues or results; filter, join, group or count data; combine sources (e.g. git + files + Linear); or run independent steps (use Promise.all). This applies even when a direct MCP tool for the same server exists (e.g. mcp__…linear…): call it through mcp.<server> here instead.
-Use the direct tools only for a single read, a single edit the user should see as a diff, or one standalone MCP call.
-
-Globals (cwd = ${cwd()}). Every fs/grep/sh/mcp function is async: always \`await\` it.
-  fs.read(path, {offset?, limit?}) -> string        // 1-based line offset
-  fs.write(path, content) / fs.edit(path, old, new, {all?}) -> count
-  fs.exists(path) -> bool ; fs.glob(pattern, {cwd?, limit?}) -> string[]
-  grep(regex, {path?, glob?, ignoreCase?, filesOnly?, limit?}) -> [{file,line,text}] | string[]   // ripgrep
-  sh(cmd, {cwd?, timeout?, check?}) -> {code, stdout, stderr}   // bash -c
-  mcp.docs(server, filter?) -> string   // cached one-line signatures: name(arg: type, opt?: type) // what it does
-  mcp.<server>.<tool>(args) or mcp.call(server, tool, args) -> parsed result ; mcp.tools(server, filter?) -> full schemas
-  scripts.<name>(args) / scripts.list() -> saved scripts ; config -> user settings (config.json)
-  console.log(...) (shown as logs), sleep(ms), path (node:path), require, process.
-MCP servers: ${MCP_LIST}. Unsure of a tool's name or args? Call mcp.docs(server, "keyword") first (cheap, cached), not mcp.tools.${helperDocs.length ? `
-
-Helpers (globals; prefer them over raw MCP calls when they fit):
-${helperDocs.map((d) => "  " + d).join("\n")}` : ""}${startupScripts.length ? `
-
-Saved scripts (run with {script, args} or scripts.<name>(args) inside code; prefer them when they fit):
-${startupScripts.map((d) => "  " + d).join("\n")}` : ""}
-
-Saving: when the user asks to save/reuse an action, or you ran the same kind of script twice, call save_script. Saved scripts and helpers must stay generic: take specifics (ports, repos, org, team, URLs) from args or \`config\`, never hardcode them.`;
-
-const INSTRUCTIONS = `code-mode: prefer the run_script tool over sequences of Read/Grep/Glob/Bash/MCP calls. Any task needing 2+ lookups, loops, filtering, joining or counting goes in ONE run_script call that returns only the final answer. MCP servers reachable from it: ${MCP_LIST} (use them there even if a direct tool for the same service exists).`;
+const INSTRUCTIONS = `Prefer code-mode run_script over chains of Read/Grep/Glob/Bash/MCP calls: 2+ steps go in ONE script returning only the answer. MCP via it: ${MCP_LIST}.`;
 
 const server = new McpServer({ name: "code-mode", version: VERSION }, { instructions: INSTRUCTIONS });
 server.registerTool(
@@ -439,7 +431,7 @@ server.registerTool(
 server.registerTool(
   "save_script",
   {
-    description: `Save a reusable run_script action under a name, so it can be run later with run_script({script, args}) or scripts.<name>(args). Use it when the user asks to save an action or when the same kind of task repeats. Keep it generic: specifics come from args or \`config\` (user settings), never hardcoded. scope "global" (default) saves to ${HOME_DIR}/scripts; "project" to the repo's .code-mode/scripts.`,
+    description: `Save a run_script action by name to reuse with run_script({script,args}). Generic: specifics from args or config, never hardcoded. scope global (default) or project (.code-mode/).`,
     inputSchema: {
       name: z.string().describe("kebab or camel case, e.g. stack-status"),
       description: z.string().describe("One line: what it does and returns"),
