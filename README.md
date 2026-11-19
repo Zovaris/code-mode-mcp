@@ -52,7 +52,7 @@ export default ({ mcp, sh, fs, grep }) => ({
 });
 ```
 
-Example: [`examples/lib/abaco.js`](examples/lib/abaco.js) (`myIssues`, `myPRs`, `prsForIssue`). Copy it to `~/.config/code-mode/lib/`.
+Example: [`examples/lib/abaco.js`](examples/lib/abaco.js) (`myIssues`, `myPRs`, `prsForIssue`) and [`examples/lib/local-stack.js`](examples/lib/local-stack.js) (`localStack`, `stackLogs`). Copy them to `~/.config/code-mode/lib/`.
 
 Secrets stay out of the config: values in `env` and `headers` expand `${env:VAR}` and `${cmd:gh auth token}`.
 
