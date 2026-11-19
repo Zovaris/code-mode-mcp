@@ -21,7 +21,8 @@ All functions are async (`await` them). The cwd is the Claude Code project folde
 | `fs.read(path, {offset, limit})`, `fs.write`, `fs.edit(path, old, new, {all})`, `fs.exists`, `fs.glob(pattern)` | Files |
 | `grep(regex, {path, glob, ignoreCase, filesOnly, limit})` | ripgrep, returns `{file, line, text}` |
 | `sh(cmd, {cwd, timeout, check})` | `bash -c`, returns `{code, stdout, stderr}` |
-| `mcp.servers()`, `mcp.tools(server, filter)`, `mcp.<server>.<tool>(args)` | Other MCP servers |
+| `mcp.docs(server, filter)` | One-line signatures, cached in `~/.cache/code-mode/` (`{refresh: true}` to reload) |
+| `mcp.<server>.<tool>(args)`, `mcp.call`, `mcp.tools`, `mcp.servers()` | Other MCP servers |
 | `console.log`, `sleep`, `path`, `require`, `process` | Helpers |
 
 ## Proxied MCP servers
@@ -32,7 +33,28 @@ All functions are async (`await` them). The cwd is the Claude Code project folde
 { "mcpServers": { "engram": { "command": "engram", "args": ["mcp", "--tools=agent"] } } }
 ```
 
-claude.ai connectors (Linear, Gmail…) are not reachable: they need the app's OAuth.
+Remote servers with OAuth go through `mcp-remote`, which opens the browser once and keeps the token:
+
+```json
+"linear": { "command": "npx", "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"] }
+```
+
+Servers that only accept approved clients (Slack, Google Workspace) don't work this way; keep using their claude.ai connectors.
+
+## Helpers
+
+Every file in `~/.config/code-mode/lib/*.js` is loaded at startup and its functions become script globals, listed in the tool description so Claude uses them:
+
+```js
+export const docs = { myPRs: "myPRs({state?}) -> [{repo, number, title, url}] // my open PRs" };
+export default ({ mcp, sh, fs, grep }) => ({
+  async myPRs({ state = "open" } = {}) { /* ... */ },
+});
+```
+
+Example: [`examples/lib/abaco.js`](examples/lib/abaco.js) (`myIssues`, `myPRs`, `prsForIssue`). Copy it to `~/.config/code-mode/lib/`.
+
+Secrets stay out of the config: values in `env` and `headers` expand `${env:VAR}` and `${cmd:gh auth token}`.
 
 ## Try it without Claude
 
