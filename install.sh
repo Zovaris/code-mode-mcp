@@ -24,11 +24,10 @@ if [ ! -f "$CONFIG" ]; then
 fi
 
 if command -v claude >/dev/null; then
-  if claude mcp get code-mode >/dev/null 2>&1; then
-    echo "claude: code-mode already registered (open a new session to load the new binary)"
-  else
-    claude mcp add -s user code-mode "$BIN_DIR/code-mode" >/dev/null && echo "claude: registered code-mode (user scope)"
-  fi
+  # alwaysLoad: tools load upfront instead of behind ToolSearch (saves a round trip per session).
+  claude mcp remove -s user code-mode >/dev/null 2>&1 || true
+  claude mcp add-json -s user code-mode "{\"type\":\"stdio\",\"command\":\"$BIN_DIR/code-mode\",\"alwaysLoad\":true}" >/dev/null \
+    && echo "claude: registered code-mode (user scope, alwaysLoad; open a new session to load it)"
 fi
 
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "note: $BIN_DIR is not in PATH" ;; esac

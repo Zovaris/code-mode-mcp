@@ -413,6 +413,7 @@ server.registerTool(
   "run_script",
   {
     description: DESCRIPTION,
+    _meta: { "anthropic/alwaysLoad": true }, // skip the ToolSearch round trip in Claude Code
     inputSchema: {
       code: z.string().optional().describe("Body of an async JS function. Use `return` for the result."),
       script: z.string().optional().describe("Name of a saved script to run instead of code"),
