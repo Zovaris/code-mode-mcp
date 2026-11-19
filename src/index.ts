@@ -1,0 +1,236 @@
+#!/usr/bin/env bun
+// code-mode: one MCP tool, `run_script`, that runs model-written JavaScript against a small
+// API (files, grep, shell, other MCP servers). Many tool calls become one script; only the
+// returned value reaches the model. Modeled on Cloudflare Code Mode, OpenCode/pi codemode
+// and Claude Code's experimental Code Mode. No sandbox: local use only.
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { z } from "zod";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import * as pathMod from "node:path";
+import { resolve, join } from "node:path";
+import { createRequire } from "node:module";
+const req = createRequire(join(process.cwd(), "noop.js"));
+
+const VERSION = "0.1.0";
+const MAX_OUT = Number(process.env.CODE_MODE_MAX_OUTPUT ?? 20000);
+const CONFIG = process.env.CODE_MODE_CONFIG ?? join(homedir(), ".config/code-mode/servers.json");
+
+// ---------- MCP proxy ----------
+type ServerCfg = { command?: string; args?: string[]; env?: Record<string, string>; cwd?: string; url?: string; headers?: Record<string, string> };
+
+function loadServers(): Record<string, ServerCfg> {
+  if (!existsSync(CONFIG)) return {};
+  try {
+    const raw = JSON.parse(readFileSync(CONFIG, "utf8"));
+    return raw.mcpServers ?? raw;
+  } catch (e) {
+    console.error(`code-mode: bad config ${CONFIG}: ${e}`);
+    return {};
+  }
+}
+
+const serverCfgs = loadServers();
+const clients = new Map<string, Promise<Client>>();
+
+function client(name: string): Promise<Client> {
+  const cfg = serverCfgs[name];
+  if (!cfg) throw new Error(`unknown MCP server "${name}". Known: ${Object.keys(serverCfgs).join(", ") || "(none)"}`);
+  let c = clients.get(name);
+  if (!c) {
+    c = (async () => {
+      const cl = new Client({ name: "code-mode", version: VERSION });
+      const transport = cfg.url
+        ? new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: cfg.headers } })
+        : new StdioClientTransport({
+            command: cfg.command!,
+            args: cfg.args ?? [],
+            env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
+            cwd: cfg.cwd,
+            stderr: "ignore",
+          });
+      await cl.connect(transport);
+      return cl;
+    })();
+    c.catch(() => clients.delete(name));
+    clients.set(name, c);
+  }
+  return c;
+}
+
+function unwrap(res: any): any {
+  if (res?.structuredContent !== undefined) return res.structuredContent;
+  const parts = (res?.content ?? []).map((p: any) => (p.type === "text" ? p.text : p));
+  const vals = parts.map((p: any) => {
+    if (typeof p !== "string") return p;
+    try { return JSON.parse(p); } catch { return p; }
+  });
+  const out = vals.length === 1 ? vals[0] : vals;
+  if (res?.isError) throw new Error(typeof out === "string" ? out : JSON.stringify(out));
+  return out;
+}
+
+const mcpApi: any = {
+  servers: () => Object.keys(serverCfgs),
+  async tools(server: string, filter?: string) {
+    const { tools } = await (await client(server)).listTools();
+    const f = filter?.toLowerCase();
+    return tools
+      .filter((t) => !f || t.name.toLowerCase().includes(f) || (t.description ?? "").toLowerCase().includes(f))
+      .map((t) => ({ name: t.name, description: (t.description ?? "").slice(0, 300), input: t.inputSchema }));
+  },
+  async call(server: string, tool: string, args: Record<string, unknown> = {}) {
+    return unwrap(await (await client(server)).callTool({ name: tool, arguments: args }));
+  },
+};
+const mcp = new Proxy(mcpApi, {
+  get(target, server: string) {
+    if (server in target) return target[server];
+    if (typeof server !== "string" || server === "then") return undefined;
+    return new Proxy({}, { get: (_t, tool: string) => (args?: Record<string, unknown>) => mcpApi.call(server, tool, args) });
+  },
+});
+
+// ---------- local API ----------
+const cwd = () => process.cwd();
+const abs = (p: string) => resolve(cwd(), p.replace(/^~(?=\/|$)/, homedir()));
+
+const fs = {
+  async read(path: string, opts: { offset?: number; limit?: number } = {}) {
+    const text = await Bun.file(abs(path)).text();
+    if (opts.offset === undefined && opts.limit === undefined) return text;
+    const lines = text.split("\n");
+    const start = Math.max(0, (opts.offset ?? 1) - 1);
+    return lines.slice(start, opts.limit ? start + opts.limit : undefined).join("\n");
+  },
+  async write(path: string, content: string) {
+    await Bun.write(abs(path), content);
+    return true;
+  },
+  async edit(path: string, oldStr: string, newStr: string, opts: { all?: boolean } = {}) {
+    const p = abs(path);
+    const text = await Bun.file(p).text();
+    const n = text.split(oldStr).length - 1;
+    if (n === 0) throw new Error(`edit: text not found in ${path}`);
+    if (n > 1 && !opts.all) throw new Error(`edit: ${n} matches in ${path}; pass {all:true}`);
+    await Bun.write(p, opts.all ? text.split(oldStr).join(newStr) : text.replace(oldStr, () => newStr));
+    return n;
+  },
+  exists: (path: string) => existsSync(abs(path)),
+  async glob(pattern: string, opts: { cwd?: string; limit?: number } = {}) {
+    const out: string[] = [];
+    const g = new Bun.Glob(pattern);
+    for await (const f of g.scan({ cwd: opts.cwd ? abs(opts.cwd) : cwd(), onlyFiles: true })) {
+      if (f.includes("node_modules/") || f.startsWith(".git/")) continue;
+      out.push(f);
+      if (out.length >= (opts.limit ?? 1000)) break;
+    }
+    return out.sort();
+  },
+};
+
+async function sh(cmd: string, opts: { cwd?: string; timeout?: number; check?: boolean } = {}) {
+  const p = Bun.spawn(["/bin/bash", "-c", cmd], { cwd: opts.cwd ? abs(opts.cwd) : cwd(), stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => p.kill(), opts.timeout ?? 120_000);
+  const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  clearTimeout(timer);
+  if (opts.check && code !== 0) throw new Error(`sh exit ${code}: ${stderr.trim() || stdout.trim()}`);
+  return { code, stdout, stderr };
+}
+
+async function grep(pattern: string, opts: { path?: string; glob?: string; ignoreCase?: boolean; limit?: number; filesOnly?: boolean } = {}) {
+  const args = ["rg", "--no-heading", "--color=never", opts.filesOnly ? "-l" : "-n"];
+  if (opts.ignoreCase) args.push("-i");
+  if (opts.glob) args.push("-g", opts.glob);
+  args.push("-e", pattern, opts.path ? abs(opts.path) : ".");
+  const p = Bun.spawn(args, { cwd: cwd(), stdout: "pipe", stderr: "pipe" });
+  const text = await new Response(p.stdout).text();
+  await p.exited;
+  const lines = text.split("\n").filter(Boolean).slice(0, opts.limit ?? 500);
+  if (opts.filesOnly) return lines;
+  return lines.map((l) => {
+    const m = l.match(/^(.*?):(\d+):(.*)$/);
+    return m ? { file: m[1], line: Number(m[2]), text: m[3] } : { file: "", line: 0, text: l };
+  });
+}
+
+// ---------- runner ----------
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+function fmt(v: unknown): string {
+  if (typeof v === "string") return v;
+  try { return JSON.stringify(v) ?? String(v); } catch { return String(v); }
+}
+
+async function run(code: string, timeoutMs: number) {
+  const logs: string[] = [];
+  const log = (...a: unknown[]) => logs.push(a.map(fmt).join(" "));
+  const sandboxConsole = { log, info: log, warn: log, error: log, debug: log };
+  const api = { fs, sh, grep, mcp, console: sandboxConsole, cwd: cwd(), path: pathMod, require: req, sleep: (ms: number) => Bun.sleep(ms) };
+  const fn = new AsyncFunction(...Object.keys(api), code);
+  const t0 = performance.now();
+  let result: unknown, error: string | undefined;
+  try {
+    result = await Promise.race([
+      fn(...Object.values(api)),
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs)),
+    ]);
+  } catch (e: any) {
+    error = e?.stack?.split("\n").slice(0, 4).join("\n") ?? String(e);
+  }
+  const ms = Math.round(performance.now() - t0);
+  let out = "";
+  if (logs.length) out += `--- logs ---\n${logs.join("\n")}\n`;
+  if (error) out += `--- error ---\n${error}\n`;
+  else out += `--- result ---\n${result === undefined ? "(undefined)" : fmt(result)}\n`;
+  if (out.length > MAX_OUT) out = out.slice(0, MAX_OUT) + `\n…[truncated ${out.length - MAX_OUT} chars; return less]`;
+  return { text: out + `(${ms}ms)`, isError: !!error };
+}
+
+// ---------- server ----------
+const servers = Object.keys(serverCfgs);
+const DESCRIPTION = `Run JavaScript (async function body; use \`return\`) to do many steps in ONE call. Prefer this over chains of read/grep/bash/MCP calls when you need several lookups, loops, filtering or joining data: only the returned value comes back, so return just what you need. Independent work: use Promise.all.
+
+Globals (cwd = ${cwd()}). Every fs/grep/sh/mcp function is async: always \`await\` it.
+  fs.read(path, {offset?, limit?}) -> string        // 1-based line offset
+  fs.write(path, content) / fs.edit(path, old, new, {all?}) -> count
+  fs.exists(path) -> bool ; fs.glob(pattern, {cwd?, limit?}) -> string[]
+  grep(regex, {path?, glob?, ignoreCase?, filesOnly?, limit?}) -> [{file,line,text}] | string[]   // ripgrep
+  sh(cmd, {cwd?, timeout?, check?}) -> {code, stdout, stderr}   // bash -c
+  mcp.servers() -> string[] ; mcp.tools(server, filter?) -> [{name, description, input}]
+  mcp.call(server, tool, args) or mcp.<server>.<tool>(args) -> parsed result
+  console.log(...) (shown as logs), sleep(ms), path (node:path), require, process.
+MCP servers: ${servers.length ? servers.join(", ") : "(none configured)"}. Call mcp.tools(server) first to see a server's tool names and input schemas.`;
+
+const server = new McpServer({ name: "code-mode", version: VERSION });
+server.registerTool(
+  "run_script",
+  {
+    description: DESCRIPTION,
+    inputSchema: {
+      code: z.string().describe("Body of an async JS function. Use `return` for the result."),
+      timeout_ms: z.number().int().positive().max(600_000).optional().describe("Default 120000"),
+    },
+  },
+  async ({ code, timeout_ms }) => {
+    const { text, isError } = await run(code, timeout_ms ?? 120_000);
+    return { content: [{ type: "text", text }], isError };
+  },
+);
+
+if (process.argv.includes("--version")) {
+  console.log(VERSION);
+  process.exit(0);
+}
+if (process.argv[2] === "eval") {
+  // local test: code-mode eval '<js>'
+  const { text } = await run(process.argv[3] ?? "return 1", 120_000);
+  console.log(text);
+  for (const c of clients.values()) (await c).close().catch(() => {});
+  process.exit(0);
+}
+await server.connect(new StdioServerTransport());
