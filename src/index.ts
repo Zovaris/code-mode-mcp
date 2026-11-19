@@ -37,6 +37,18 @@ function loadServers(): Record<string, ServerCfg> {
 const serverCfgs = loadServers();
 const clients = new Map<string, Promise<Client>>();
 
+// Secrets stay out of the config: "${cmd:gh auth token}" runs the command, "${env:VAR}" reads env.
+function expand(v: string): string {
+  return v
+    .replace(/\$\{env:([^}]+)\}/g, (_m, k) => process.env[k] ?? "")
+    .replace(/\$\{cmd:([^}]+)\}/g, (_m, cmd) => {
+      const p = Bun.spawnSync(["/bin/bash", "-lc", cmd]);
+      if (p.exitCode !== 0) throw new Error(`config command failed: ${cmd}: ${p.stderr.toString().trim()}`);
+      return p.stdout.toString().trim();
+    });
+}
+const expandAll = (o?: Record<string, string>) => o && Object.fromEntries(Object.entries(o).map(([k, v]) => [k, expand(v)]));
+
 function client(name: string): Promise<Client> {
   const cfg = serverCfgs[name];
   if (!cfg) throw new Error(`unknown MCP server "${name}". Known: ${Object.keys(serverCfgs).join(", ") || "(none)"}`);
@@ -45,11 +57,11 @@ function client(name: string): Promise<Client> {
     c = (async () => {
       const cl = new Client({ name: "code-mode", version: VERSION });
       const transport = cfg.url
-        ? new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: cfg.headers } })
+        ? new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: expandAll(cfg.headers) } })
         : new StdioClientTransport({
             command: cfg.command!,
             args: cfg.args ?? [],
-            env: { ...(process.env as Record<string, string>), ...(cfg.env ?? {}) },
+            env: { ...(process.env as Record<string, string>), ...(expandAll(cfg.env) ?? {}) },
             cwd: cfg.cwd,
             stderr: "ignore",
           });
