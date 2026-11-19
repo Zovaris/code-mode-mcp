@@ -16,7 +16,7 @@ import { resolve, join } from "node:path";
 import { createRequire } from "node:module";
 const req = createRequire(join(process.cwd(), "noop.js"));
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const MAX_OUT = Number(process.env.CODE_MODE_MAX_OUTPUT ?? 20000);
 const CONFIG = process.env.CODE_MODE_CONFIG ?? join(homedir(), ".config/code-mode/servers.json");
 
@@ -193,7 +193,11 @@ async function run(code: string, timeoutMs: number) {
 
 // ---------- server ----------
 const servers = Object.keys(serverCfgs);
-const DESCRIPTION = `Run JavaScript (async function body; use \`return\`) to do many steps in ONE call. Prefer this over chains of read/grep/bash/MCP calls when you need several lookups, loops, filtering or joining data: only the returned value comes back, so return just what you need. Independent work: use Promise.all.
+const MCP_LIST = servers.length ? servers.join(", ") : "(none configured)";
+const DESCRIPTION = `DEFAULT tool for any task that needs 2+ tool calls. Runs JavaScript (async function body; use \`return\`) that reads files, greps, runs shell and calls MCP servers (${MCP_LIST}) in ONE call. Only the returned value enters your context, so return just the answer (counts, filtered rows, short excerpts), never raw dumps.
+
+Use it instead of chaining Read/Grep/Glob/Bash or MCP tools when you would: read or search several files; loop over files, issues or results; filter, join, group or count data; combine sources (e.g. git + files + Linear); or run independent steps (use Promise.all). This applies even when a direct MCP tool for the same server exists (e.g. mcp__…linear…): call it through mcp.<server> here instead.
+Use the direct tools only for a single read, a single edit the user should see as a diff, or one standalone MCP call.
 
 Globals (cwd = ${cwd()}). Every fs/grep/sh/mcp function is async: always \`await\` it.
   fs.read(path, {offset?, limit?}) -> string        // 1-based line offset
@@ -204,9 +208,11 @@ Globals (cwd = ${cwd()}). Every fs/grep/sh/mcp function is async: always \`await
   mcp.servers() -> string[] ; mcp.tools(server, filter?) -> [{name, description, input}]
   mcp.call(server, tool, args) or mcp.<server>.<tool>(args) -> parsed result
   console.log(...) (shown as logs), sleep(ms), path (node:path), require, process.
-MCP servers: ${servers.length ? servers.join(", ") : "(none configured)"}. Call mcp.tools(server) first to see a server's tool names and input schemas.`;
+MCP servers: ${MCP_LIST}. If you don't know a server's tool names or input schema yet, call mcp.tools(server, filter) in the same script, then use them.`;
 
-const server = new McpServer({ name: "code-mode", version: VERSION });
+const INSTRUCTIONS = `code-mode: prefer the run_script tool over sequences of Read/Grep/Glob/Bash/MCP calls. Any task needing 2+ lookups, loops, filtering, joining or counting goes in ONE run_script call that returns only the final answer. MCP servers reachable from it: ${MCP_LIST} (use them there even if a direct tool for the same service exists).`;
+
+const server = new McpServer({ name: "code-mode", version: VERSION }, { instructions: INSTRUCTIONS });
 server.registerTool(
   "run_script",
   {
