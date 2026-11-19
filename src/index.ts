@@ -16,22 +16,60 @@ import { resolve, join } from "node:path";
 import { createRequire } from "node:module";
 const req = createRequire(join(process.cwd(), "noop.js"));
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const MAX_OUT = Number(process.env.CODE_MODE_MAX_OUTPUT ?? 20000);
-const CONFIG = process.env.CODE_MODE_CONFIG ?? join(homedir(), ".config/code-mode/servers.json");
+
+// ---------- layers: global (~/.config/code-mode) then project (.code-mode/ up from cwd) ----------
+// Each layer may hold servers.json, config.json, lib/*.js and scripts/*.js; the project wins.
+const HOME_DIR = process.env.CODE_MODE_HOME ?? join(homedir(), ".config/code-mode");
+
+function findUp(name: string, from = process.cwd()): string | undefined {
+  let dir = resolve(from);
+  while (true) {
+    const p = join(dir, name);
+    if (existsSync(p) && p !== HOME_DIR) return p;
+    const parent = pathMod.dirname(dir);
+    if (parent === dir || dir === homedir()) return undefined;
+    dir = parent;
+  }
+}
+const PROJECT_DIR = findUp(".code-mode");
+const LAYERS: { scope: "global" | "project"; dir: string }[] = [
+  { scope: "global", dir: HOME_DIR },
+  ...(PROJECT_DIR ? [{ scope: "project" as const, dir: PROJECT_DIR }] : []),
+];
+
+function readJson(file: string): any {
+  if (!existsSync(file)) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    console.error(`code-mode: bad JSON ${file}: ${e}`);
+    return undefined;
+  }
+}
+
+function merge(a: any, b: any): any {
+  if (b === undefined) return a;
+  if (a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+    const out = { ...a };
+    for (const [k, v] of Object.entries(b)) out[k] = merge(a[k], v);
+    return out;
+  }
+  return b;
+}
+
+// User settings that helpers and scripts read (ports, org, team…): nothing specific lives in code.
+const config: Record<string, any> = LAYERS.reduce((acc, l) => merge(acc, readJson(join(l.dir, "config.json"))), {});
 
 // ---------- MCP proxy ----------
 type ServerCfg = { command?: string; args?: string[]; env?: Record<string, string>; cwd?: string; url?: string; headers?: Record<string, string> };
 
 function loadServers(): Record<string, ServerCfg> {
-  if (!existsSync(CONFIG)) return {};
-  try {
-    const raw = JSON.parse(readFileSync(CONFIG, "utf8"));
-    return raw.mcpServers ?? raw;
-  } catch (e) {
-    console.error(`code-mode: bad config ${CONFIG}: ${e}`);
-    return {};
-  }
+  return LAYERS.reduce((acc, l) => {
+    const raw = readJson(join(l.dir, "servers.json"));
+    return { ...acc, ...(raw?.mcpServers ?? raw ?? {}) };
+  }, {} as Record<string, ServerCfg>);
 }
 
 const serverCfgs = loadServers();
@@ -218,38 +256,121 @@ function fmt(v: unknown): string {
   try { return JSON.stringify(v) ?? String(v); } catch { return String(v); }
 }
 
-// ---------- helpers ----------
-// Each ~/.config/code-mode/lib/*.js: `export default (ctx) => ({ fnName: async (...) => ... })`
+// ---------- helpers: <layer>/lib/*.js ----------
+// `export default ({ fs, sh, grep, mcp, path, config }) => ({ fnName: async (...) => ... })`
 // and optionally `export const docs = { fnName: "fnName(args) -> result // what it does" }`.
-const LIB_DIR = process.env.CODE_MODE_LIB ?? join(homedir(), ".config/code-mode/lib");
+// Helpers are adapters: they take their specifics from `config`, never hardcode them.
 const helpers: Record<string, unknown> = {};
-const helperDocs: string[] = [];
-if (existsSync(LIB_DIR)) {
-  for (const f of readdirSync(LIB_DIR).filter((f) => /\.(m?js|ts)$/.test(f)).sort()) {
+const helperDocMap = new Map<string, string>();
+for (const { dir } of LAYERS) {
+  const lib = join(dir, "lib");
+  if (!existsSync(lib)) continue;
+  for (const f of readdirSync(lib).filter((f) => /\.(m?js|ts)$/.test(f)).sort()) {
     try {
-      const mod = await import(join(LIB_DIR, f));
-      const made = typeof mod.default === "function" ? await mod.default({ fs, sh, grep, mcp, path: pathMod }) : mod.default;
+      const mod = await import(join(lib, f));
+      const made = typeof mod.default === "function" ? await mod.default({ fs, sh, grep, mcp, path: pathMod, config }) : mod.default;
       for (const [k, v] of Object.entries(made ?? {})) {
         helpers[k] = v;
-        helperDocs.push(mod.docs?.[k] ?? `${k}(...)`);
+        helperDocMap.set(k, mod.docs?.[k] ?? `${k}(...)`);
       }
     } catch (e) {
-      console.error(`code-mode: helper ${f} failed: ${e}`);
+      console.error(`code-mode: helper ${join(lib, f)} failed: ${e}`);
     }
   }
 }
+const helperDocs = [...helperDocMap.values()];
 
-async function run(code: string, timeoutMs: number) {
-  const logs: string[] = [];
-  const log = (...a: unknown[]) => logs.push(a.map(fmt).join(" "));
+// ---------- saved scripts: <layer>/scripts/<name>.js ----------
+// Plain function bodies (same as run_script code) with a comment header:
+//   // @description What it does
+//   // @param name type? what it is      ("?" after the type = optional)
+// The body sees every global plus `args`. Read specifics from args or `config`, never hardcode.
+type Param = { name: string; type: string; optional: boolean; description: string };
+type Script = { name: string; description: string; params: Param[]; body: string; scope: string; file: string };
+const NAME_RE = /^[a-zA-Z][\w-]*$/;
+
+function parseScript(file: string, scope: string): Script {
+  const text = readFileSync(file, "utf8");
+  const params: Param[] = [];
+  let description = "";
+  for (const line of text.split("\n")) {
+    const d = line.match(/^\/\/\s*@description\s+(.*)$/);
+    if (d) description = d[1].trim();
+    const p = line.match(/^\/\/\s*@param\s+(\w+)\s+(\S+?)(\?)?(?:\s+(.*))?$/);
+    if (p) params.push({ name: p[1], type: p[2], optional: !!p[3], description: (p[4] ?? "").trim() });
+  }
+  return { name: pathMod.basename(file, ".js"), description, params, body: text, scope, file };
+}
+
+function loadScripts(): Map<string, Script> {
+  const out = new Map<string, Script>();
+  for (const { scope, dir } of LAYERS) {
+    const d = join(dir, "scripts");
+    if (!existsSync(d)) continue;
+    for (const f of readdirSync(d).filter((f) => f.endsWith(".js")).sort()) {
+      try {
+        const s = parseScript(join(d, f), scope);
+        out.set(s.name, s);
+      } catch (e) {
+        console.error(`code-mode: script ${f} failed: ${e}`);
+      }
+    }
+  }
+  return out;
+}
+
+const scriptSig = (s: Script) =>
+  `${s.name}(${s.params.length ? `{${s.params.map((p) => `${p.name}${p.optional ? "?" : ""}: ${p.type}`).join(", ")}}` : ""}) // ${s.description}${s.scope === "project" ? " [project]" : ""}`;
+
+function saveScript(o: { name: string; description: string; params?: Partial<Param>[]; code: string; scope?: "global" | "project"; overwrite?: boolean }) {
+  if (!NAME_RE.test(o.name)) throw new Error(`invalid name "${o.name}": letters, digits, - and _`);
+  new AsyncFunction("args", o.code); // syntax check
+  let base = HOME_DIR;
+  if (o.scope === "project") {
+    const git = findUp(".git");
+    base = PROJECT_DIR ?? join(git ? pathMod.dirname(git) : process.cwd(), ".code-mode");
+  }
+  const dir = join(base, "scripts");
+  const file = join(dir, `${o.name}.js`);
+  if (existsSync(file) && !o.overwrite) throw new Error(`script "${o.name}" exists at ${file}; pass overwrite: true to replace it`);
+  const header = [
+    `// @description ${o.description.replace(/\n/g, " ")}`,
+    ...(o.params ?? []).map((p) => `// @param ${p.name} ${p.type ?? "any"}${p.optional ? "?" : ""}${p.description ? " " + p.description : ""}`),
+  ].join("\n");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, `${header}\n\n${o.code.trim()}\n`);
+  return file;
+}
+
+function buildApi(log: (...a: unknown[]) => void) {
   const sandboxConsole = { log, info: log, warn: log, error: log, debug: log };
-  const api = { ...helpers, fs, sh, grep, mcp, console: sandboxConsole, cwd: cwd(), path: pathMod, require: req, sleep: (ms: number) => Bun.sleep(ms) };
-  const fn = new AsyncFunction(...Object.keys(api), code);
+  const api: Record<string, unknown> = {
+    ...helpers, fs, sh, grep, mcp, config, console: sandboxConsole, cwd: cwd(), path: pathMod, require: req,
+    sleep: (ms: number) => Bun.sleep(ms),
+  };
+  const scriptsApi = {
+    list: () => [...loadScripts().values()].map(scriptSig),
+    run: (name: string, args: Record<string, unknown> = {}) => {
+      const s = loadScripts().get(name);
+      if (!s) throw new Error(`unknown script "${name}". Saved: ${[...loadScripts().keys()].join(", ") || "(none)"}`);
+      return new AsyncFunction(...Object.keys(api), "args", s.body)(...Object.values(api), args);
+    },
+  };
+  api.scripts = new Proxy(scriptsApi, {
+    get: (t: any, k: string) => (k in t ? t[k] : k === "then" ? undefined : (args?: Record<string, unknown>) => scriptsApi.run(k, args)),
+  });
+  return api;
+}
+
+async function run(code: string, timeoutMs: number, args: Record<string, unknown> = {}) {
+  const logs: string[] = [];
+  const api = buildApi((...a: unknown[]) => logs.push(a.map(fmt).join(" ")));
+  const fn = new AsyncFunction(...Object.keys(api), "args", code);
   const t0 = performance.now();
   let result: unknown, error: string | undefined;
   try {
     result = await Promise.race([
-      fn(...Object.values(api)),
+      fn(...Object.values(api), args),
       new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs)),
     ]);
   } catch (e: any) {
@@ -267,6 +388,7 @@ async function run(code: string, timeoutMs: number) {
 // ---------- server ----------
 const servers = Object.keys(serverCfgs);
 const MCP_LIST = servers.length ? servers.join(", ") : "(none configured)";
+const startupScripts = [...loadScripts().values()].map(scriptSig);
 const DESCRIPTION = `DEFAULT tool for any task that needs 2+ tool calls. Runs JavaScript (async function body; use \`return\`) that reads files, greps, runs shell and calls MCP servers (${MCP_LIST}) in ONE call. Only the returned value enters your context, so return just the answer (counts, filtered rows, short excerpts), never raw dumps.
 
 Use it instead of chaining Read/Grep/Glob/Bash or MCP tools when you would: read or search several files; loop over files, issues or results; filter, join, group or count data; combine sources (e.g. git + files + Linear); or run independent steps (use Promise.all). This applies even when a direct MCP tool for the same server exists (e.g. mcp__…linear…): call it through mcp.<server> here instead.
@@ -280,11 +402,17 @@ Globals (cwd = ${cwd()}). Every fs/grep/sh/mcp function is async: always \`await
   sh(cmd, {cwd?, timeout?, check?}) -> {code, stdout, stderr}   // bash -c
   mcp.docs(server, filter?) -> string   // cached one-line signatures: name(arg: type, opt?: type) // what it does
   mcp.<server>.<tool>(args) or mcp.call(server, tool, args) -> parsed result ; mcp.tools(server, filter?) -> full schemas
+  scripts.<name>(args) / scripts.list() -> saved scripts ; config -> user settings (config.json)
   console.log(...) (shown as logs), sleep(ms), path (node:path), require, process.
 MCP servers: ${MCP_LIST}. Unsure of a tool's name or args? Call mcp.docs(server, "keyword") first (cheap, cached), not mcp.tools.${helperDocs.length ? `
 
 Helpers (globals; prefer them over raw MCP calls when they fit):
-${helperDocs.map((d) => "  " + d).join("\n")}` : ""}`;
+${helperDocs.map((d) => "  " + d).join("\n")}` : ""}${startupScripts.length ? `
+
+Saved scripts (run with {script, args} or scripts.<name>(args) inside code; prefer them when they fit):
+${startupScripts.map((d) => "  " + d).join("\n")}` : ""}
+
+Saving: when the user asks to save/reuse an action, or you ran the same kind of script twice, call save_script. Saved scripts and helpers must stay generic: take specifics (ports, repos, org, team, URLs) from args or \`config\`, never hardcode them.`;
 
 const INSTRUCTIONS = `code-mode: prefer the run_script tool over sequences of Read/Grep/Glob/Bash/MCP calls. Any task needing 2+ lookups, loops, filtering, joining or counting goes in ONE run_script call that returns only the final answer. MCP servers reachable from it: ${MCP_LIST} (use them there even if a direct tool for the same service exists).`;
 
@@ -294,13 +422,40 @@ server.registerTool(
   {
     description: DESCRIPTION,
     inputSchema: {
-      code: z.string().describe("Body of an async JS function. Use `return` for the result."),
+      code: z.string().optional().describe("Body of an async JS function. Use `return` for the result."),
+      script: z.string().optional().describe("Name of a saved script to run instead of code"),
+      args: z.record(z.string(), z.any()).optional().describe("Arguments for the saved script (also `args` inside code)"),
       timeout_ms: z.number().int().positive().max(600_000).optional().describe("Default 120000"),
     },
   },
-  async ({ code, timeout_ms }) => {
-    const { text, isError } = await run(code, timeout_ms ?? 120_000);
+  async ({ code, script, args, timeout_ms }) => {
+    if (!code === !script) return { content: [{ type: "text", text: "pass exactly one of code or script" }], isError: true };
+    const body = script ? `return await scripts.run(${JSON.stringify(script)}, args);` : code!;
+    const { text, isError } = await run(body, timeout_ms ?? 120_000, args ?? {});
     return { content: [{ type: "text", text }], isError };
+  },
+);
+
+server.registerTool(
+  "save_script",
+  {
+    description: `Save a reusable run_script action under a name, so it can be run later with run_script({script, args}) or scripts.<name>(args). Use it when the user asks to save an action or when the same kind of task repeats. Keep it generic: specifics come from args or \`config\` (user settings), never hardcoded. scope "global" (default) saves to ${HOME_DIR}/scripts; "project" to the repo's .code-mode/scripts.`,
+    inputSchema: {
+      name: z.string().describe("kebab or camel case, e.g. stack-status"),
+      description: z.string().describe("One line: what it does and returns"),
+      params: z.array(z.object({ name: z.string(), type: z.string(), optional: z.boolean().optional(), description: z.string().optional() })).optional(),
+      code: z.string().describe("Async function body; reads `args`; uses `return`"),
+      scope: z.enum(["global", "project"]).optional(),
+      overwrite: z.boolean().optional(),
+    },
+  },
+  async (o) => {
+    try {
+      const file = saveScript(o);
+      return { content: [{ type: "text", text: `saved ${file}` }] };
+    } catch (e: any) {
+      return { content: [{ type: "text", text: String(e?.message ?? e) }], isError: true };
+    }
   },
 );
 
@@ -308,9 +463,13 @@ if (process.argv.includes("--version")) {
   console.log(VERSION);
   process.exit(0);
 }
-if (process.argv[2] === "eval") {
-  // local test: code-mode eval '<js>'
-  const { text } = await run(process.argv[3] ?? "return 1", 120_000);
+const cli = process.argv[2];
+if (cli === "eval" || cli === "run" || cli === "scripts") {
+  // code-mode eval '<js>' | code-mode run <script> ['{"json":"args"}'] | code-mode scripts
+  let text: string;
+  if (cli === "scripts") text = [...loadScripts().values()].map((s) => `${scriptSig(s)}\n    ${s.file}`).join("\n") || "(no saved scripts)";
+  else if (cli === "run") text = (await run(`return await scripts.run(${JSON.stringify(process.argv[3])}, args);`, 600_000, JSON.parse(process.argv[4] ?? "{}"))).text;
+  else text = (await run(process.argv[3] ?? "return 1", 120_000)).text;
   console.log(text);
   for (const c of clients.values()) (await c).close().catch(() => {});
   process.exit(0);
