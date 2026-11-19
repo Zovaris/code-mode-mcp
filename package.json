@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "bun build --compile --minify src/index.ts --outfile bin/code-mode",
-    "dev": "bun src/index.ts"
+    "dev": "bun src/index.ts",
+    "install-local": "./install.sh"
   },
   "devDependencies": {
     "@types/bun": "latest"
