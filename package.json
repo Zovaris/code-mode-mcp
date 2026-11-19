@@ -1,0 +1,19 @@
+{
+  "name": "code-mode",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bun build --compile --minify src/index.ts --outfile bin/code-mode",
+    "dev": "bun src/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  }
+}
