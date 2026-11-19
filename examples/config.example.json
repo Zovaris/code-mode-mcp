@@ -1,0 +1,13 @@
+{
+  "issues": { "server": "linear", "team": "My Team", "assignee": "me", "activeStates": ["Todo", "In Progress"] },
+  "codeHost": { "server": "github", "org": "my-org" },
+  "stack": {
+    "root": "~/code",
+    "runtimeHint": "open Docker Desktop",
+    "services": [
+      { "port": 5432, "name": "postgres", "cwd": "infra", "start": "docker compose up -d" },
+      { "port": 8080, "name": "api", "cwd": "api", "start": "make up" },
+      { "port": 3000, "name": "web", "cwd": "web", "start": "npm run dev", "optional": true }
+    ]
+  }
+}
