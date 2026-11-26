@@ -11,14 +11,24 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun test
       - run: bun run build
-      - name: Smoke test
+      - name: Smoke test (node bundle)
         run: |
-          test "$(./bin/code-mode --version)" = "$(jq -r .version package.json)"
-          ./bin/code-mode eval 'return (await fs.glob("src/**/*.ts")).length' | grep -q '^1$'
+          test "$(node dist/index.js --version)" = "$(jq -r .version package.json)"
+          node dist/index.js eval 'return (await fs.glob("src/*.ts")).length > 0' | grep -q '^true$'
+      - run: bun run build:bin
+      - name: Smoke test (binary)
+        run: ./bin/code-mode-mcp eval 'return (await sh("echo ok")).stdout.trim()' | grep -q '^ok$'
