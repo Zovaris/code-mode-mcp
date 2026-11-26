@@ -6,38 +6,62 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        target: [bun-darwin-arm64, bun-darwin-x64, bun-linux-x64, bun-linux-arm64]
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-      - name: Check tag matches package.json
+      - name: Tag matches package.json
         run: test "${GITHUB_REF_NAME#v}" = "$(jq -r .version package.json)"
-      - name: Build
-        run: |
-          name="code-mode-${{ matrix.target }}"; name="${name/bun-/}"
-          bun build --compile --minify --target=${{ matrix.target }} src/index.ts --outfile "dist/$name"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: dist/*
+      - run: bun run typecheck
+      - run: bun test
 
-  release:
-    needs: build
+  binaries:
+    needs: check
+    strategy:
+      matrix:
+        target: [darwin-arm64, darwin-x64, linux-x64, linux-arm64]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun build --compile --minify --target=bun-${{ matrix.target }} src/index.ts --outfile dist/code-mode-mcp-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    needs: binaries
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@sthbryan/code-mode-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org/
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          pattern: bin-*
+          path: release
           merge-multiple: true
-      - run: cd dist && shasum -a 256 code-mode-* > SHA256SUMS
-      - name: Publish release
+      - run: cd release && shasum -a 256 code-mode-mcp-* > SHA256SUMS
+      - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" release/* --title "$GITHUB_REF_NAME" --generate-notes
