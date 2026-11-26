@@ -1,16 +1,16 @@
 {
-  "name": "@sthbryan/code-mode-mcp",
+  "name": "@zovaris/code-mode-mcp",
   "version": "0.5.0",
   "description": "Code Mode for any MCP client: the model writes one JavaScript script that reads files, greps, runs shell and calls other MCP servers, and only the result comes back.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sthbryan/code-mode-mcp"
+    "url": "https://github.com/Zovaris/code-mode-mcp"
   },
-  "homepage": "https://github.com/sthbryan/code-mode-mcp#readme",
+  "homepage": "https://github.com/Zovaris/code-mode-mcp#readme",
   "bugs": {
-    "url": "https://github.com/sthbryan/code-mode-mcp/issues"
+    "url": "https://github.com/Zovaris/code-mode-mcp/issues"
   },
   "author": {
     "name": "sthbryan",

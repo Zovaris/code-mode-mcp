@@ -6,8 +6,8 @@
 
 An MCP server that runs model-written JavaScript against your files, shell and other MCP servers in a single call. Only the returned value goes back into the context.
 
-[![CI](https://github.com/sthbryan/code-mode-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/sthbryan/code-mode-mcp/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@sthbryan/code-mode-mcp)](https://www.npmjs.com/package/@sthbryan/code-mode-mcp)
+[![CI](https://github.com/Zovaris/code-mode-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Zovaris/code-mode-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@zovaris/code-mode-mcp)](https://www.npmjs.com/package/@zovaris/code-mode-mcp)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![MCP](https://img.shields.io/badge/protocol-MCP-blue)
 
@@ -48,13 +48,13 @@ The model gets back only the top five. The idea is known as "Code Mode". This se
 **With npx** (Node 20+). Add this to your MCP client config:
 
 ```json
-{ "mcpServers": { "code-mode": { "command": "npx", "args": ["-y", "@sthbryan/code-mode-mcp"] } } }
+{ "mcpServers": { "code-mode": { "command": "npx", "args": ["-y", "@zovaris/code-mode-mcp"] } } }
 ```
 
 **As a binary** (macOS and Linux, no runtime needed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sthbryan/code-mode-mcp/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Zovaris/code-mode-mcp/main/install.sh | sh
 ```
 
 This installs `~/.local/bin/code-mode-mcp` (checksum verified) and creates `~/.config/code-mode/servers.json`. Then register it:
@@ -68,7 +68,7 @@ This installs `~/.local/bin/code-mode-mcp` (checksum verified) and creates `~/.c
 
 | Client | How |
 | --- | --- |
-| Claude Code | `claude mcp add -s user code-mode -- npx -y @sthbryan/code-mode-mcp` |
+| Claude Code | `claude mcp add -s user code-mode -- npx -y @zovaris/code-mode-mcp` |
 | Claude Desktop | `claude_desktop_config.json` → `mcpServers` |
 | Cursor | `~/.cursor/mcp.json` → `mcpServers` |
 | VS Code | `.vscode/mcp.json` → `servers` |

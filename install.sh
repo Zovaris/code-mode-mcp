@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 # Installs the code-mode-mcp binary from the latest GitHub release. No Bun or Node needed.
-#   curl -fsSL https://raw.githubusercontent.com/sthbryan/code-mode-mcp/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Zovaris/code-mode-mcp/main/install.sh | sh
 # Env: VERSION=v1.0.0 (default latest), BIN_DIR=~/.local/bin
 set -eu
 
-REPO="sthbryan/code-mode-mcp"
+REPO="Zovaris/code-mode-mcp"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-latest}"
 CONFIG_DIR="${CODE_MODE_HOME:-$HOME/.config/code-mode}"
@@ -12,7 +12,7 @@ CONFIG_DIR="${CODE_MODE_HOME:-$HOME/.config/code-mode}"
 case "$(uname -s)" in
   Darwin) os=darwin ;;
   Linux) os=linux ;;
-  *) echo "unsupported OS: $(uname -s); use: npx -y @sthbryan/code-mode-mcp" >&2; exit 1 ;;
+  *) echo "unsupported OS: $(uname -s); use: npx -y @zovaris/code-mode-mcp" >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   arm64 | aarch64) arch=arm64 ;;

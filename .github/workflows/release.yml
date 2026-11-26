@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: npm
-      url: https://www.npmjs.com/package/@sthbryan/code-mode-mcp
+      url: https://www.npmjs.com/package/@zovaris/code-mode-mcp
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
