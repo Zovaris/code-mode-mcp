@@ -1,16 +1,16 @@
 {
   "name": "code-mode",
+  "version": "0.5.0",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "bun build --compile --minify src/index.ts --outfile bin/code-mode",
     "dev": "bun src/index.ts",
-    "install-local": "./install.sh"
+    "install-local": "./install.sh",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
+    "@types/bun": "latest",
     "typescript": "^7"
   },
   "dependencies": {

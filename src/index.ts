@@ -16,7 +16,8 @@ import { resolve, join } from "node:path";
 import { createRequire } from "node:module";
 const req = createRequire(join(process.cwd(), "noop.js"));
 
-const VERSION = "0.5.0";
+import pkg from "../package.json" with { type: "json" };
+const VERSION: string = pkg.version;
 const MAX_OUT = Number(process.env.CODE_MODE_MAX_OUTPUT ?? 20000);
 
 // ---------- layers: global (~/.config/code-mode) then project (.code-mode/ up from cwd) ----------
