@@ -1,20 +1,56 @@
 {
-  "name": "code-mode",
+  "name": "@sthbryan/code-mode-mcp",
   "version": "0.5.0",
+  "description": "Code Mode for any MCP client: the model writes one JavaScript script that reads files, greps, runs shell and calls other MCP servers, and only the result comes back.",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sthbryan/code-mode-mcp"
+  },
+  "homepage": "https://github.com/sthbryan/code-mode-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/sthbryan/code-mode-mcp/issues"
+  },
+  "author": {
+    "name": "sthbryan",
+    "url": "https://justcallmebryan.com"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-mode",
+    "agents",
+    "llm",
+    "tools"
+  ],
+  "bin": {
+    "code-mode-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "build": "bun build --compile --minify src/index.ts --outfile bin/code-mode",
+    "build": "bun build src/index.ts --outdir dist --target node --minify",
+    "build:bin": "bun build --compile --minify src/index.ts --outfile bin/code-mode-mcp",
     "dev": "bun src/index.ts",
-    "install-local": "./install.sh",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^7"
-  },
-  "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@types/bun": "latest",
+    "tinyglobby": "^0.2.17",
+    "typescript": "^7",
     "zod": "^4.6.7"
   }
 }
