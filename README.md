@@ -1,100 +1,171 @@
+<div align="center">
+
 # code-mode
 
-An MCP server where Claude writes async JavaScript that reads files, greps, runs shell and calls other MCP servers in a single call; only the returned value reaches the context. Same idea as Cloudflare Code Mode, opencode/pi codemode and Claude Code's experimental Code Mode, but it works on any surface (Desktop included).
+**Let the model write one script instead of making twenty tool calls.**
 
-Tools:
+An MCP server that runs model-written JavaScript against your files, shell and other MCP servers in a single call. Only the returned value goes back into the context.
 
-- `run_script({code})` runs a script; `run_script({script, args})` runs a saved one.
-- `save_script({name, description, params, code})` saves an action to reuse later.
+[![CI](https://github.com/sthbryan/claude-code-mode/actions/workflows/ci.yml/badge.svg)](https://github.com/sthbryan/claude-code-mode/actions/workflows/ci.yml)
+![Runtime](https://img.shields.io/badge/runtime-Bun-black)
+![MCP](https://img.shields.io/badge/protocol-MCP-blue)
 
-No sandbox and no permission prompts: scripts run with your user's rights. Local use only.
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Script API](#script-api) · [Configuration](#configuration) · [CLI](#cli)
 
-## Install
+</div>
+
+---
+
+## Why
+
+Agents chain tool calls: read a file, grep, read three more, call an API, filter. Every intermediate result fills up the context and every step costs a round trip. Code Mode turns that chain into one program:
+
+```js
+// one run_script call
+const files = await fs.glob("src/**/*.ts");
+const hits = await Promise.all(files.map(async (f) => ({ f, n: (await fs.read(f)).split("TODO").length - 1 })));
+return hits.filter((h) => h.n).sort((a, b) => b.n - a.n).slice(0, 5);
+```
+
+The model gets back only the top five. The same idea appears elsewhere as "Code Mode". This version runs on any MCP client.
+
+## Features
+
+- **Two tools.** `run_script` runs code or a saved script. `save_script` saves a reusable action.
+- **MCP proxy.** Calls any other MCP server as `mcp.<server>.<tool>(args)`, over stdio or HTTP.
+- **Helpers and saved scripts.** Your own functions, loaded from a folder and listed for the model automatically.
+- **Layered config.** A global layer plus a per-project layer. Nothing company-specific lives in the code.
+- **Secrets out of files.** Use `${env:VAR}` and `${cmd:...}` in server env and headers.
+- **Single binary.** Compiled with Bun, so there is no runtime to install.
+
+> [!WARNING]
+> There is no sandbox. Scripts run with your user's permissions and without permission prompts. Use it locally only.
+
+## Quick start
+
+Requires [Bun](https://bun.sh).
 
 ```bash
+git clone git@github.com:sthbryan/claude-code-mode.git
+cd claude-code-mode
 ./install.sh
 ```
 
-Builds a single binary with Bun, installs it to `~/.local/bin/code-mode` and registers it in Claude Code (`claude mcp add -s user`). Open a new session to pick up a new build.
+The script builds `~/.local/bin/code-mode`, creates `~/.config/code-mode/servers.json` and registers the server in Claude Code at user scope. Open a new session to load it.
 
-## Nothing specific in code
+For any other MCP client, register the binary as a stdio server:
 
-code-mode knows nothing about your company, stack or tools. Everything specific is data in a layer folder:
+```json
+{ "mcpServers": { "code-mode": { "command": "/Users/you/.local/bin/code-mode" } } }
+```
 
-| File | Holds |
-| --- | --- |
-| `servers.json` | MCP servers to proxy |
-| `config.json` | Your settings (ports, org, team…), read by helpers and scripts as `config` |
-| `lib/*.js` | Helpers: adapters that turn MCP/shell calls into simple functions, reading specifics from `config` |
-| `scripts/*.js` | Saved actions: plain function bodies with a comment header |
+## How it works
 
-Layers: global `~/.config/code-mode/` (or `$CODE_MODE_HOME`), then project `.code-mode/` found walking up from the cwd. The project layer wins: `config.json` deep-merges, servers, helpers and scripts override by name. Moving machines or tools means copying a folder or swapping one adapter file.
+```
+model ──run_script({code})──▶ code-mode ──▶ fs / grep / sh
+                                  │
+                                  └──────▶ mcp.<server>.<tool>() ──▶ other MCP servers
+model ◀──── returned value only ──┘
+```
+
+1. At startup, code-mode reads the layers and connects proxied servers lazily, on first use.
+2. The tool description lists the API, your helpers and your saved scripts in a short form.
+3. The script runs as an async function body. Logs and the return value come back, truncated to `CODE_MODE_MAX_OUTPUT`.
+
+## Tools
+
+| Tool | Input | Does |
+| --- | --- | --- |
+| `run_script` | `{code}` or `{script, args}`, optional `timeout_ms` | Runs a JS body or a saved script |
+| `save_script` | `{name, description, params?, code, scope?, overwrite?}` | Saves to `scripts/<name>.js` in the global or project layer |
 
 ## Script API
 
-All functions are async (`await` them). The cwd is the Claude Code project folder.
+Every call is async, so `await` it. The working directory is the client's project folder.
 
 | Global | Does |
 | --- | --- |
-| `fs.read(path, {offset, limit})`, `fs.write`, `fs.edit(path, old, new, {all})`, `fs.exists`, `fs.glob(pattern)` | Files |
-| `grep(regex, {path, glob, ignoreCase, filesOnly, limit})` | ripgrep, returns `{file, line, text}` |
-| `sh(cmd, {cwd, timeout, check})` | `bash -c`, returns `{code, stdout, stderr}` |
-| `mcp.docs(server, filter)` | One-line signatures, cached in `~/.cache/code-mode/` (`{refresh: true}` to reload) |
-| `mcp.<server>.<tool>(args)`, `mcp.call`, `mcp.tools`, `mcp.servers()` | Other MCP servers |
-| `scripts.run(name, args)`, `scripts.<name>(args)`, `scripts.list()` | Saved scripts |
-| `config`, `args` | Merged settings; arguments of the current script |
-| `console.log`, `sleep`, `path`, `require`, `process` | Utilities |
+| `fs.read(path, {offset, limit})` `fs.write` `fs.edit(path, old, new, {all})` `fs.exists` `fs.glob(pattern)` | Files |
+| `grep(regex, {path, glob, ignoreCase, filesOnly, limit})` | ripgrep → `[{file, line, text}]` |
+| `sh(cmd, {cwd, timeout, check})` | `bash -c` → `{code, stdout, stderr}` |
+| `mcp.<server>.<tool>(args)` `mcp.call` `mcp.tools` `mcp.servers()` | Proxied MCP servers |
+| `mcp.docs(server, filter)` | One-line tool signatures, cached in `~/.cache/code-mode/` |
+| `scripts.run(name, args)` `scripts.<name>(args)` `scripts.list()` | Saved scripts |
+| `help(keyword)` | Signatures of helpers and scripts |
+| `config` `args` `console.log` `sleep` `path` `require` | Utilities |
 
-## Proxied MCP servers
+## Configuration
 
-`servers.json`, same shape as Claude Code's `mcpServers` (stdio `command`/`args`/`env`, or `url`/`headers`):
+Everything specific to you is data, kept in a layer folder:
+
+| File | Holds |
+| --- | --- |
+| `servers.json` | MCP servers to proxy, in the same shape as `mcpServers` |
+| `config.json` | Your settings, exposed to helpers and scripts as `config` |
+| `lib/*.js` | Helpers: adapters that turn MCP or shell calls into plain functions |
+| `scripts/*.js` | Saved actions: function bodies with a comment header |
+
+There are two layers. The global one is `~/.config/code-mode/` (or `$CODE_MODE_HOME`). The project one is `.code-mode/`, found by walking up from the cwd. The project layer wins: `config.json` deep-merges, and servers, helpers and scripts are overridden by name.
+
+### Proxied servers
 
 ```json
-{ "mcpServers": { "engram": { "command": "engram", "args": ["mcp", "--tools=agent"] } } }
+{
+  "mcpServers": {
+    "local-tool": { "command": "my-mcp", "args": ["serve"] },
+    "tracker": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${env:TRACKER_API_KEY}" }
+    },
+    "oauth-server": { "command": "npx", "args": ["-y", "mcp-remote", "https://mcp.example.com/mcp"] }
+  }
+}
 ```
 
-Remote servers with OAuth go through `mcp-remote`, which opens the browser once and keeps the token:
-
-```json
-"linear": { "command": "npx", "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"] }
-```
-
-Secrets stay out of the file: values in `env` and `headers` expand `${env:VAR}` and `${cmd:gh auth token}`. Servers that only accept approved clients (Slack, Google Workspace) don't work this way; keep using their claude.ai connectors.
-
-## Helpers
-
-Each `lib/*.js` is loaded at startup; its functions become script globals and are listed in the tool description:
+### Helpers
 
 ```js
-export const docs = { myPRs: "myPRs({state?}) -> [{repo, number, title, url}] // my PRs (org from config.codeHost)" };
+// lib/code-host.js
+export const docs = { myPRs: "myPRs({state?}) -> [{repo, number, title, url}] // my PRs" };
 export default ({ mcp, sh, fs, grep, config }) => ({
-  myPRs: async ({ state = "open" } = {}) => { /* uses config.codeHost.org */ },
+  myPRs: async ({ state = "open" } = {}) => { /* reads config.codeHost */ },
 });
 ```
 
-Examples in [`examples/lib/`](examples/lib/): `issues.js` (Linear: `myIssues`), `code-host.js` (GitHub: `myPRs`, `prsMentioning`), `stack.js` (`stackStatus`, `containerLogs`). Settings for all three: [`examples/config.example.json`](examples/config.example.json).
-
-## Saved scripts
+### Saved scripts
 
 ```js
+// scripts/issue-prs.js
 // @description My issues with the PRs that mention each
-// @param states string[]? issue states (default config.issues.activeStates)
+// @param states string[]? issue states
 
 const issues = await myIssues({ states: args.states ?? config.issues.activeStates });
 return Promise.all(issues.map(async (i) => ({ id: i.id, prs: await prsMentioning(i.id) })));
 ```
 
-Claude saves them with `save_script` when you ask or when a task repeats, and lists them in the tool description. Examples in [`examples/scripts/`](examples/scripts/).
+Working examples live in [`examples/`](examples/): issue tracker, code host and local stack adapters, plus two scripts.
 
 ## CLI
 
 ```bash
-code-mode scripts                       # list saved scripts
-code-mode run stack-status '{"all":true}'
-code-mode eval 'return (await fs.glob("src/**/*.ts")).length'
+code-mode --version
+code-mode scripts                                # list saved scripts
+code-mode run stack-status '{"all":true}'        # run a saved script
+code-mode eval 'return (await fs.glob("**/*.ts")).length'
 ```
 
-## Env
+| Env | Default |
+| --- | --- |
+| `CODE_MODE_HOME` | `~/.config/code-mode` |
+| `CODE_MODE_MAX_OUTPUT` | `20000` characters |
 
-- `CODE_MODE_HOME`: global layer folder (default `~/.config/code-mode`)
-- `CODE_MODE_MAX_OUTPUT`: max characters returned (default 20000)
+## Development
+
+```bash
+bun install
+bun run dev         # run from source
+bun run typecheck
+bun run build       # bin/code-mode
+```
+
+Releases: bump `version` in `package.json`, then push a `vX.Y.Z` tag. The release workflow publishes binaries for macOS and Linux (arm64 and x64) with checksums.
