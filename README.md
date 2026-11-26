@@ -11,7 +11,7 @@ An MCP server that runs model-written JavaScript against your files, shell and o
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![MCP](https://img.shields.io/badge/protocol-MCP-blue)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Script API](#script-api) · [Configuration](#configuration) · [CLI](#cli)
+[Install](#install) · [How it works](#how-it-works) · [Script API](#script-api) · [Configuration](#configuration) · [CLI](#cli)
 
 </div>
 
@@ -43,40 +43,73 @@ The model gets back only the top five. The idea is known as "Code Mode". This se
 > [!WARNING]
 > There is no sandbox. Scripts run with your user's permissions and without permission prompts. Use it locally only.
 
-## Quick start
+## Install
 
-**With npx** (Node 20+). Add this to your MCP client config:
+Pick one way to run it. All three start the same stdio MCP server.
 
-```json
-{ "mcpServers": { "code-mode": { "command": "npx", "args": ["-y", "@zovaris/code-mode-mcp"] } } }
-```
+| Runner | Command | Needs |
+| --- | --- | --- |
+| **bunx** | `bunx --bun @zovaris/code-mode-mcp` | [Bun](https://bun.sh) |
+| **npx** | `npx -y @zovaris/code-mode-mcp` | Node 20+ |
+| **binary** | `~/.local/bin/code-mode-mcp` | nothing (see below) |
 
-**As a binary** (macOS and Linux, no runtime needed):
+Standalone binary for macOS and Linux, checksum verified:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Zovaris/code-mode-mcp/main/install.sh | sh
 ```
 
-This installs `~/.local/bin/code-mode-mcp` (checksum verified) and creates `~/.config/code-mode/servers.json`. Then register it:
+### Add it to your client
 
-```json
-{ "mcpServers": { "code-mode": { "command": "/Users/you/.local/bin/code-mode-mcp" } } }
+The examples use `bunx`. For npx, swap the command for `npx` and the args for `["-y", "@zovaris/code-mode-mcp"]`. For the binary, use its path as the command and drop the args.
+
+**Claude Code**
+
+```bash
+claude mcp add -s user code-mode -- bunx --bun @zovaris/code-mode-mcp
 ```
 
-<details>
-<summary>Where that config goes, per client</summary>
+**Claude Desktop** (`claude_desktop_config.json`), **Cursor** (`~/.cursor/mcp.json`), **Windsurf** (`~/.codeium/windsurf/mcp_config.json`)
 
-| Client | How |
-| --- | --- |
-| Claude Code | `claude mcp add -s user code-mode -- npx -y @zovaris/code-mode-mcp` |
-| Claude Desktop | `claude_desktop_config.json` → `mcpServers` |
-| Cursor | `~/.cursor/mcp.json` → `mcpServers` |
-| VS Code | `.vscode/mcp.json` → `servers` |
-| Codex CLI | `~/.codex/config.toml` → `[mcp_servers.code-mode]` with `command` and `args` |
-| OpenCode | `opencode.json` → `mcp.code-mode` with `"type": "local"` and `command` |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` → `mcpServers` |
+```json
+{
+  "mcpServers": {
+    "code-mode": { "command": "bunx", "args": ["--bun", "@zovaris/code-mode-mcp"] }
+  }
+}
+```
 
-</details>
+**VS Code** (`.vscode/mcp.json`)
+
+```json
+{
+  "servers": {
+    "code-mode": { "type": "stdio", "command": "bunx", "args": ["--bun", "@zovaris/code-mode-mcp"] }
+  }
+}
+```
+
+**Codex CLI** (`~/.codex/config.toml`)
+
+```toml
+[mcp_servers.code-mode]
+command = "bunx"
+args = ["--bun", "@zovaris/code-mode-mcp"]
+```
+
+**OpenCode** (`opencode.json`)
+
+```json
+{
+  "mcp": {
+    "code-mode": { "type": "local", "command": ["bunx", "--bun", "@zovaris/code-mode-mcp"] }
+  }
+}
+```
+
+GUI apps such as Claude Desktop may not see your shell's `PATH`. If `bunx` is not found, use its full path (`which bunx`).
+
+Then add the MCP servers you want to reach from scripts to `~/.config/code-mode/servers.json` (see [Configuration](#configuration)).
 
 ## How it works
 

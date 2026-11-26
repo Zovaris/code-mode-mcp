@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Zovaris/code-mode-mcp"
+    "url": "git+https://github.com/Zovaris/code-mode-mcp.git"
   },
   "homepage": "https://github.com/Zovaris/code-mode-mcp#readme",
   "bugs": {
@@ -25,7 +25,7 @@
     "tools"
   ],
   "bin": {
-    "code-mode-mcp": "./dist/index.js"
+    "code-mode-mcp": "dist/index.js"
   },
   "files": [
     "dist",
