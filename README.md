@@ -1,13 +1,14 @@
 <div align="center">
 
-# code-mode
+# code-mode-mcp
 
 **Let the model write one script instead of making twenty tool calls.**
 
 An MCP server that runs model-written JavaScript against your files, shell and other MCP servers in a single call. Only the returned value goes back into the context.
 
-[![CI](https://github.com/sthbryan/claude-code-mode/actions/workflows/ci.yml/badge.svg)](https://github.com/sthbryan/claude-code-mode/actions/workflows/ci.yml)
-![Runtime](https://img.shields.io/badge/runtime-Bun-black)
+[![CI](https://github.com/sthbryan/code-mode-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/sthbryan/code-mode-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@sthbryan/code-mode-mcp)](https://www.npmjs.com/package/@sthbryan/code-mode-mcp)
+![License](https://img.shields.io/badge/license-MIT-green)
 ![MCP](https://img.shields.io/badge/protocol-MCP-blue)
 
 [Quick start](#quick-start) · [How it works](#how-it-works) · [Script API](#script-api) · [Configuration](#configuration) · [CLI](#cli)
@@ -27,7 +28,7 @@ const hits = await Promise.all(files.map(async (f) => ({ f, n: (await fs.read(f)
 return hits.filter((h) => h.n).sort((a, b) => b.n - a.n).slice(0, 5);
 ```
 
-The model gets back only the top five. The same idea appears elsewhere as "Code Mode". This version runs on any MCP client.
+The model gets back only the top five. The idea is known as "Code Mode". This server brings it to any MCP client: Claude, Cursor, Codex, OpenCode, VS Code, Windsurf or your own agent.
 
 ## Features
 
@@ -36,33 +37,51 @@ The model gets back only the top five. The same idea appears elsewhere as "Code 
 - **Helpers and saved scripts.** Your own functions, loaded from a folder and listed for the model automatically.
 - **Layered config.** A global layer plus a per-project layer. Nothing company-specific lives in the code.
 - **Secrets out of files.** Use `${env:VAR}` and `${cmd:...}` in server env and headers.
-- **Single binary.** Compiled with Bun, so there is no runtime to install.
+- **Runs anywhere.** `npx` with Node 20+, or a standalone binary with no runtime at all.
+- **Never left running.** A script that times out or returns is cancelled, and every process it started is killed.
 
 > [!WARNING]
 > There is no sandbox. Scripts run with your user's permissions and without permission prompts. Use it locally only.
 
 ## Quick start
 
-Requires [Bun](https://bun.sh).
-
-```bash
-git clone git@github.com:sthbryan/claude-code-mode.git
-cd claude-code-mode
-./install.sh
-```
-
-The script builds `~/.local/bin/code-mode`, creates `~/.config/code-mode/servers.json` and registers the server in Claude Code at user scope. Open a new session to load it.
-
-For any other MCP client, register the binary as a stdio server:
+**With npx** (Node 20+). Add this to your MCP client config:
 
 ```json
-{ "mcpServers": { "code-mode": { "command": "/Users/you/.local/bin/code-mode" } } }
+{ "mcpServers": { "code-mode": { "command": "npx", "args": ["-y", "@sthbryan/code-mode-mcp"] } } }
 ```
+
+**As a binary** (macOS and Linux, no runtime needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sthbryan/code-mode-mcp/main/install.sh | sh
+```
+
+This installs `~/.local/bin/code-mode-mcp` (checksum verified) and creates `~/.config/code-mode/servers.json`. Then register it:
+
+```json
+{ "mcpServers": { "code-mode": { "command": "/Users/you/.local/bin/code-mode-mcp" } } }
+```
+
+<details>
+<summary>Where that config goes, per client</summary>
+
+| Client | How |
+| --- | --- |
+| Claude Code | `claude mcp add -s user code-mode -- npx -y @sthbryan/code-mode-mcp` |
+| Claude Desktop | `claude_desktop_config.json` → `mcpServers` |
+| Cursor | `~/.cursor/mcp.json` → `mcpServers` |
+| VS Code | `.vscode/mcp.json` → `servers` |
+| Codex CLI | `~/.codex/config.toml` → `[mcp_servers.code-mode]` with `command` and `args` |
+| OpenCode | `opencode.json` → `mcp.code-mode` with `"type": "local"` and `command` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` → `mcpServers` |
+
+</details>
 
 ## How it works
 
 ```
-model ──run_script({code})──▶ code-mode ──▶ fs / grep / sh
+model ──run_script({code})──▶ code-mode-mcp ──▶ fs / grep / sh
                                   │
                                   └──────▶ mcp.<server>.<tool>() ──▶ other MCP servers
 model ◀──── returned value only ──┘
@@ -86,13 +105,15 @@ Every call is async, so `await` it. The working directory is the client's projec
 | Global | Does |
 | --- | --- |
 | `fs.read(path, {offset, limit})` `fs.write` `fs.edit(path, old, new, {all})` `fs.exists` `fs.glob(pattern)` | Files |
-| `grep(regex, {path, glob, ignoreCase, filesOnly, limit})` | ripgrep → `[{file, line, text}]` |
+| `grep(regex, {path, glob, ignoreCase, filesOnly, limit})` | ripgrep (falls back to `grep -r`) → `[{file, line, text}]` |
 | `sh(cmd, {cwd, timeout, check})` | `bash -c` → `{code, stdout, stderr}` |
 | `mcp.<server>.<tool>(args)` `mcp.call` `mcp.tools` `mcp.servers()` | Proxied MCP servers |
 | `mcp.docs(server, filter)` | One-line tool signatures, cached in `~/.cache/code-mode/` |
 | `scripts.run(name, args)` `scripts.<name>(args)` `scripts.list()` | Saved scripts |
 | `help(keyword)` | Signatures of helpers and scripts |
-| `config` `args` `console.log` `sleep` `path` `require` | Utilities |
+| `config` `args` `console.log` `sleep(ms)` `path` `require` | Utilities |
+
+`run_script` stops at `timeout_ms` (120 s by default). When a script times out or returns, pending calls reject, later calls throw, and its shell processes, including their children, are killed.
 
 ## Configuration
 
@@ -143,15 +164,26 @@ const issues = await myIssues({ states: args.states ?? config.issues.activeState
 return Promise.all(issues.map(async (i) => ({ id: i.id, prs: await prsMentioning(i.id) })));
 ```
 
-Working examples live in [`examples/`](examples/): issue tracker, code host and local stack adapters, plus two scripts.
+Working examples live in [`examples/`](examples/). Copy what you want into a layer folder:
+
+| File | Gives |
+| --- | --- |
+| `lib/git.js` | `changedFiles`, `recentCommits` |
+| `lib/issues.js` | `myIssues` (issue tracker over MCP; set `config.issues.server`) |
+| `lib/code-host.js` | `myPRs`, `prsMentioning` (code host over MCP; set `config.codeHost`) |
+| `lib/stack.js` | `stackStatus`, `containerLogs` (local services and Docker) |
+| `scripts/todos.js` | TODO/FIXME comments grouped by file |
+| `scripts/review-prep.js` | What changed on the branch, its commits and new TODOs |
+| `scripts/issue-prs.js` | Your issues with the PRs that mention each |
+| `scripts/stack-status.js` | Which local services are up, and how to start the rest |
 
 ## CLI
 
 ```bash
-code-mode --version
-code-mode scripts                                # list saved scripts
-code-mode run stack-status '{"all":true}'        # run a saved script
-code-mode eval 'return (await fs.glob("**/*.ts")).length'
+code-mode-mcp --version
+code-mode-mcp scripts                            # list saved scripts
+code-mode-mcp run todos '{"limit":5}'            # run a saved script
+code-mode-mcp eval 'return (await fs.glob("**/*.ts")).length'
 ```
 
 | Env | Default |
@@ -164,8 +196,14 @@ code-mode eval 'return (await fs.glob("**/*.ts")).length'
 ```bash
 bun install
 bun run dev         # run from source
+bun test
 bun run typecheck
-bun run build       # bin/code-mode
+bun run build       # dist/index.js for Node
+bun run build:bin   # bin/code-mode-mcp standalone binary
 ```
 
-Releases: bump `version` in `package.json`, then push a `vX.Y.Z` tag. The release workflow publishes binaries for macOS and Linux (arm64 and x64) with checksums.
+Releases: bump `version` in `package.json` and push a `vX.Y.Z` tag. The release workflow tests, publishes to npm and attaches binaries for macOS and Linux (arm64 and x64) with `SHA256SUMS`.
+
+## License
+
+[MIT](LICENSE)
