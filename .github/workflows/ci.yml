@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+      - name: Smoke test
+        run: |
+          test "$(./bin/code-mode --version)" = "$(jq -r .version package.json)"
+          ./bin/code-mode eval 'return (await fs.glob("src/**/*.ts")).length' | grep -q '^1$'
