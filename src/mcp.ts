@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -65,8 +66,16 @@ export function createMcp(serverCfgs: Record<string, ServerCfg>, opts: { version
   const clients = new Map<string, Promise<Client>>();
 
   function client(name: string): Promise<Client> {
-    const cfg = serverCfgs[name];
-    if (!cfg) throw new Error(`unknown MCP server "${name}". Known: ${Object.keys(serverCfgs).join(", ") || "(none)"}`);
+    if (typeof name !== "string") throw new Error(`MCP server name must be a string, got ${String(name)}. Call mcp.servers() to list them.`);
+    const cfg = Object.hasOwn(serverCfgs, name) ? serverCfgs[name] : undefined;
+    if (!cfg) {
+      const known = Object.keys(serverCfgs);
+      throw new Error(
+        known.length
+          ? `unknown MCP server "${name}". Configured: ${known.join(", ")}.`
+          : `unknown MCP server "${name}". No servers are configured; add mcpServers to servers.json in your code-mode layer folder.`,
+      );
+    }
     let c = clients.get(name);
     if (!c) {
       c = (async () => {
@@ -106,7 +115,9 @@ export function createMcp(serverCfgs: Record<string, ServerCfg>, opts: { version
     },
     // Compact TS-like signatures, cached on disk so reading them needs no connection.
     async docs(server: string, filter?: string, o: { refresh?: boolean } = {}) {
-      const file = join(cacheDir, `${server}.json`);
+      // Keyed by the server's config too, so a project layer that redefines a server name never reads another server's cache.
+      const cfgHash = createHash("sha256").update(JSON.stringify(serverCfgs[server] ?? null)).digest("hex").slice(0, 12);
+      const file = join(cacheDir, `${server}-${cfgHash}.json`);
       let tools: CachedTool[] | undefined;
       if (!o.refresh && existsSync(file)) tools = JSON.parse(readFileSync(file, "utf8"));
       if (!tools) {
