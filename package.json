@@ -1,6 +1,6 @@
 {
   "name": "@zovaris/code-mode-mcp",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "description": "Code Mode for any MCP client: the model writes one JavaScript script that reads files, greps, runs shell and calls other MCP servers, and only the result comes back.",
   "type": "module",
   "license": "MIT",
