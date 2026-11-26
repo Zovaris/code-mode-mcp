@@ -157,7 +157,7 @@ const mcpApi: any = {
 
 type CachedTool = { name: string; description: string; inputSchema: any };
 const CACHE_DIR = join(homedir(), ".cache/code-mode");
-const firstLine = (s: string) => s.split(/\n|(?<=\.)\s/)[0].slice(0, 100);
+const firstLine = (s: string) => (s.split(/\n|(?<=\.)\s/)[0] ?? "").slice(0, 100);
 
 function tsType(s: any): string {
   if (!s) return "any";
@@ -295,9 +295,9 @@ function parseScript(file: string, scope: string): Script {
   let description = "";
   for (const line of text.split("\n")) {
     const d = line.match(/^\/\/\s*@description\s+(.*)$/);
-    if (d) description = d[1].trim();
+    if (d) description = (d[1] ?? "").trim();
     const p = line.match(/^\/\/\s*@param\s+(\w+)\s+(\S+?)(\?)?(?:\s+(.*))?$/);
-    if (p) params.push({ name: p[1], type: p[2], optional: !!p[3], description: (p[4] ?? "").trim() });
+    if (p) params.push({ name: p[1]!, type: p[2]!, optional: !!p[3], description: (p[4] ?? "").trim() });
   }
   return { name: pathMod.basename(file, ".js"), description, params, body: text, scope, file };
 }
@@ -397,7 +397,7 @@ const startupScripts = [...loadScripts().values()].map(scriptSig);
 // Kept short on purpose: it is paid in every session. Full signatures live behind help() and mcp.docs().
 const shortDoc = (d: string) => {
   const [sig, what] = d.split(" // ");
-  return `${sig.split("(")[0]}${what ? ` (${what.split(/[;:(]/)[0].trim()})` : ""}`;
+  return `${(sig ?? "").split("(")[0]}${what ? ` (${(what.split(/[;:(]/)[0] ?? "").trim()})` : ""}`;
 };
 const DESCRIPTION = `Runs JS (async function body, \`return\` the result) in ONE call; only the returned value enters your context. DEFAULT for anything needing 2+ steps: several files/searches, loops, filter/group/count, combining git, files and MCP. Direct tools only for one read, one edit shown as a diff, or one standalone call. Return only the answer, never raw dumps.
 API (all async): fs.read(p,{offset,limit}) fs.write fs.edit(p,old,new) fs.glob(pat) fs.exists; grep(re,{path,glob,filesOnly}) -> [{file,line,text}]; sh(cmd,{cwd,timeout}) -> {code,stdout,stderr}; mcp.<server>.<tool>(args); mcp.docs(server,"kw") -> tool signatures; scripts.run(name,args); help("kw") -> helper/script signatures; config; args; console.log; path; require.
